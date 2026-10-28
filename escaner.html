@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Escáner QR · App MP QYT</title>
+<!--
+  Escáner QR de la app de materia prima de Quick & Tasty (versión 3.7).
+  Google no permite la cámara en vivo dentro de las apps de Apps Script, así que esta página, publicada fuera de Apps Script
+  (GitHub Pages o el sitio de la empresa), abre la cámara normal del celular, lee el código y lo devuelve a la app:
+  1) por mensaje a la pestaña de la app que la abrió y 2) por el servidor de la app (doPost), con una clave de un solo uso.
+  No guarda nada ni tiene datos de la empresa: la dirección de la app llega en el enlace que arma la app.
+  Parámetros: sid (clave), api (dirección /exec de la app), b=1 para códigos de barras del proveedor.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<style>
+:root{--tinta:#1E2B35;--texto:#3E4B55;--suave:#5B6770;--fondo:#F5F4EF;--panel:#FFFFFF;--borde:#D8D6CC;--amarillo:#F2C300;--verde:#1F7445;--verde-f:#E3F1E8;--rojo:#B3261E;--rojo-f:#FBE9E7;--base:'Barlow',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;--tit:'Barlow Condensed','Barlow',system-ui,Arial,sans-serif}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--fondo);color:var(--texto);font:16px/1.4 var(--base)}
+header{background:var(--tinta);color:#fff;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+header h1{margin:0;font:700 22px/1.1 var(--tit);letter-spacing:.2px}
+header span{font-size:13px;color:#C9D3DA}
+main{max-width:520px;margin:0 auto;padding:12px 16px 32px}
+#lector{width:100%;min-height:260px;background:#11181E;border-radius:12px;overflow:hidden}
+#lector video{border-radius:12px}
+#estado{margin:12px 0;padding:12px 14px;border-radius:10px;background:var(--panel);border:1px solid var(--borde)}
+#estado.ok{background:var(--verde-f);border-color:#9CCBAE;color:#0F4A2A}
+#estado.error{background:var(--rojo-f);border-color:#E6B4AF;color:#7A1A14}
+#codigo{display:none;margin:12px 0;padding:14px;border-radius:10px;background:#fff;border:2px solid var(--verde);font:700 28px/1.1 var(--tit);color:var(--tinta);text-align:center;word-break:break-all}
+.acciones{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.btn{flex:1 1 auto;min-height:48px;padding:10px 16px;border-radius:10px;border:2px solid var(--tinta);background:#fff;color:var(--tinta);font:700 17px/1 var(--tit);cursor:pointer}
+.btn.prim{background:var(--amarillo);border-color:#C9A200}
+.btn[hidden]{display:none}
+small{display:block;margin-top:14px;color:var(--suave)}
+</style>
+</head>
+<body>
+<header><h1>Escáner QR</h1><span>App MP · Quick &amp; Tasty</span></header>
+<main>
+  <div id="lector" aria-label="Vista de la cámara"></div>
+  <div id="codigo" aria-live="polite"></div>
+  <p id="estado" aria-live="polite">Abriendo la cámara...</p>
+  <div class="acciones" id="extra"></div>
+  <div class="acciones">
+    <button class="btn prim" id="b-foto" type="button">Tomar foto</button>
+    <button class="btn" id="b-galeria" type="button">Elegir de la galería</button>
+  </div>
+  <div class="acciones">
+    <button class="btn" id="b-copiar" type="button" hidden>Copiar el código</button>
+    <button class="btn" id="b-otro" type="button" hidden>Leer otro</button>
+    <button class="btn" id="b-cerrar" type="button">Volver a la app</button>
+  </div>
+  <input id="f-foto" type="file" accept="image/*" capture="environment" hidden>
+  <input id="f-galeria" type="file" accept="image/*" hidden>
+  <small>Apunta al código desde unos 15 a 25 cm, con buena luz. La primera vez el navegador pide permiso para la cámara: toca Permitir.</small>
+</main>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const P = new URLSearchParams(location.search);
+  const sid = /^[A-Za-z0-9]{16,48}$/.test(P.get('sid') || '') ? P.get('sid') : '';
+  const apiCruda = P.get('api') || '';
+  // Solo se devuelve el código a la dirección de una app de Apps Script (o a una prueba local)
+  const api = /^https:\/\/script\.google\.com\/(a\/macros\/[^/]+|macros)\/s\/[A-Za-z0-9_-]+\/(exec|dev)$/.test(apiCruda) || /^http:\/\/localhost(:\d+)?\//.test(apiCruda) ? apiCruda : '';
+  const barras = P.get('b') === '1';
+  const conApp = !!sid;
+  let q = null, leido = '', enviado = false;
+
+  function estado(t, tipo) { const e = $('estado'); e.textContent = t; e.className = tipo || ''; }
+  function beep(ok) {
+    try {
+      const C = window.AudioContext || window.webkitAudioContext; const a = new C(); const o = a.createOscillator(); const g = a.createGain();
+      o.frequency.value = ok ? 1046 : 220; g.gain.value = .08; o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + (ok ? .12 : .3));
+    } catch (e) { /* sin sonido */ }
+    try { if (navigator.vibrate) navigator.vibrate(ok ? 80 : [60, 60, 60]); } catch (e) { /* sin vibración */ }
+  }
+  function formatos() {
+    const F = window.Html5QrcodeSupportedFormats; if (!F) return undefined;
+    return barras ? [F.QR_CODE, F.DATA_MATRIX, F.CODE_128, F.EAN_13, F.EAN_8, F.UPC_A, F.CODE_39, F.ITF].filter(x => x !== undefined) : [F.QR_CODE];
+  }
+
+  // ── Devolver el código a la app ──
+  async function devolver(cod) {
+    if (enviado) return; enviado = true;
+    let porMensaje = false;
+    try { if (window.opener && !window.opener.closed) { window.opener.postMessage({ qytEscaner: sid, codigo: cod }, '*'); porMensaje = true; } } catch (e) { porMensaje = false; }
+    estado(porMensaje || api ? 'Listo. El código va para la app; esta pestaña se cierra sola. Si no se cierra, toca Volver a la app.' : 'Código leído. Cópialo y pégalo en la app.', 'ok');
+    // keepalive: el envío sigue aunque la pestaña se cierre
+    const envio = api ? fetch(api, { method: 'POST', mode: 'no-cors', keepalive: true, headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ a: 'escaneo', sid: sid, c: cod }) }).catch(() => {}) : Promise.resolve();
+    await Promise.race([envio, new Promise(r => setTimeout(r, porMensaje ? 400 : 6000))]);
+    if (porMensaje || api) setTimeout(() => { try { window.close(); } catch (e) { /* no se pudo */ } }, 300);
+  }
+
+  function listo(cod) {
+    if (leido) return;
+    leido = String(cod || '').trim();
+    if (!leido) return;
+    beep(true);
+    detener();
+    const c = $('codigo'); c.textContent = leido; c.style.display = 'block';
+    $('lector').style.display = 'none';
+    $('b-copiar').hidden = false; $('b-otro').hidden = false;
+    if (conApp) devolver(leido); else estado('Código leído. Cópialo y pégalo donde lo necesites.', 'ok');
+  }
+
+  // ── Cámara en vivo ──
+  function detener() { const x = q; q = null; if (x) { try { x.stop().then(() => x.clear()).catch(() => {}); } catch (e) { /* ya estaba detenida */ } } }
+  function mejorar(x) {
+    let cap = {};
+    try { cap = (x.getRunningTrackCapabilities && x.getRunningTrackCapabilities()) || {}; } catch (e) { cap = {}; }
+    const aplicar = c => { try { return x.applyVideoConstraints({ advanced: [c] }).catch(() => {}); } catch (e) { return Promise.resolve(); } };
+    if (Array.isArray(cap.focusMode) && cap.focusMode.indexOf('continuous') >= 0) aplicar({ focusMode: 'continuous' });
+    const extra = $('extra'); extra.innerHTML = '';
+    if (cap.torch) {
+      let luz = false; const b = document.createElement('button'); b.className = 'btn'; b.type = 'button'; b.textContent = 'Linterna';
+      b.onclick = () => { luz = !luz; aplicar({ torch: luz }); b.textContent = luz ? 'Apagar linterna' : 'Linterna'; }; extra.appendChild(b);
+    }
+    if (cap.zoom && cap.zoom.max > 1) {
+      let cerca = false; const z = Math.min(cap.zoom.max, 2.5); const b = document.createElement('button'); b.className = 'btn'; b.type = 'button'; b.textContent = 'Acercar';
+      b.onclick = () => { cerca = !cerca; aplicar({ zoom: cerca ? z : (cap.zoom.min || 1) }); b.textContent = cerca ? 'Alejar' : 'Acercar'; }; extra.appendChild(b);
+    }
+  }
+  function iniciar() {
+    leido = ''; enviado = false;
+    $('codigo').style.display = 'none'; $('lector').style.display = 'block';
+    $('b-copiar').hidden = true; $('b-otro').hidden = true;
+    if (!window.Html5Qrcode) { estado('No cargó el lector. Revisa la conexión a internet y recarga la página, o usa Tomar foto.', 'error'); return; }
+    estado(barras ? 'Apunta al código de barras del proveedor.' : 'Apunta al QR. Cuando lo lea, vuelves a la app sola.');
+    q = new Html5Qrcode('lector', { verbose: false, formatsToSupport: formatos(), experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
+    q.start({ facingMode: 'environment' }, {
+      fps: 15,
+      qrbox: (w, h) => { const m = Math.min(w, h); return barras ? { width: Math.max(120, Math.floor(w * 0.9)), height: Math.max(80, Math.floor(m * 0.55)) } : { width: Math.max(120, Math.floor(m * 0.8)), height: Math.max(120, Math.floor(m * 0.8)) }; },
+      videoConstraints: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
+    }, txt => listo(txt), () => {})
+      .then(() => mejorar(q))
+      .catch(err => {
+        q = null;
+        const n = String((err && err.name) || err || '');
+        if (/NotAllowed|Permission/i.test(n)) estado('El navegador no tiene permiso para la cámara en esta página. Toca el candado junto a la dirección > Permisos > Cámara > Permitir, y recarga. O usa Tomar foto.', 'error');
+        else if (/NotReadable|TrackStart/i.test(n)) estado('Otra app está usando la cámara. Ciérrala y recarga esta página, o usa Tomar foto.', 'error');
+        else if (/NotFound|Overconstrained/i.test(n)) estado('No se encontró la cámara trasera. Usa Tomar foto.', 'error');
+        else estado('No se pudo abrir la cámara (' + n + '). Usa Tomar foto o Elegir de la galería.', 'error');
+      });
+  }
+
+  // ── Foto ──
+  function cargar(f) {
+    return new Promise((ok, mal) => {
+      const rd = new FileReader();
+      rd.onload = () => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => mal(new Error('foto')); i.src = rd.result; };
+      rd.onerror = () => mal(new Error('foto')); rd.readAsDataURL(f);
+    });
+  }
+  function lienzo(img, lado, frac) {
+    const W = img.naturalWidth || img.width, H = img.naturalHeight || img.height;
+    const sw = W * frac, sh = H * frac, sx = (W - sw) / 2, sy = (H - sh) / 2, k = Math.min(1, lado / Math.max(sw, sh));
+    const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(sw * k)); c.height = Math.max(1, Math.round(sh * k));
+    const x = c.getContext('2d', { willReadFrequently: true }); x.imageSmoothingQuality = 'high'; x.drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height); return c;
+  }
+  async function leerFoto(f) {
+    detener();
+    estado('Leyendo el código de la foto...');
+    let img;
+    try { img = await cargar(f); } catch (e) { beep(false); estado('No se pudo abrir la foto. En la cámara del celular elige el formato JPG.', 'error'); return; }
+    let bd = null;
+    if ('BarcodeDetector' in window) { try { bd = new BarcodeDetector(barras ? undefined : { formats: ['qr_code'] }); } catch (e) { bd = null; } }
+    for (const [lado, frac] of [[1200, 1], [800, 1], [1600, 0.6], [1000, 0.6], [1800, 1], [600, 1], [1400, 0.4]]) {
+      const c = lienzo(img, lado, frac);
+      if (bd) { try { const r = await bd.detect(c); if (r && r.length && r[0].rawValue) return listo(r[0].rawValue); } catch (e) { /* sigue */ } }
+      if (!barras && window.jsQR) {
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height);
+        const r = jsQR(d.data, d.width, d.height, { inversionAttempts: 'attemptBoth' });
+        if (r && r.data) return listo(r.data);
+      }
+      await new Promise(r => setTimeout(r, 0));
+    }
+    if (window.Html5Qrcode) {
+      for (const [lado, frac] of [[1600, 1], [1000, 1], [1600, 0.6]]) {
+        const blob = await new Promise(r => lienzo(img, lado, frac).toBlob(r, 'image/jpeg', 0.92));
+        let host = $('leer-oculto'); if (!host) { host = document.createElement('div'); host.id = 'leer-oculto'; host.style.display = 'none'; document.body.appendChild(host); }
+        const x = new Html5Qrcode('leer-oculto', { verbose: false, formatsToSupport: formatos() });
+        try { const t = await x.scanFile(new File([blob], 'codigo.jpg', { type: 'image/jpeg' }), false); if (t) return listo(t); } catch (e) { /* sigue */ } finally { try { x.clear(); } catch (e) { /* nada */ } }
+      }
+    }
+    beep(false);
+    estado('No se encontró un código en la foto. Tómala de cerca, derecha, enfocada y sin reflejos, con el código completo.', 'error');
+  }
+
+  $('b-foto').onclick = () => $('f-foto').click();
+  $('b-galeria').onclick = () => $('f-galeria').click();
+  ['f-foto', 'f-galeria'].forEach(id => { $(id).onchange = e => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) leerFoto(f); }; });
+  $('b-copiar').onclick = async () => {
+    try { await navigator.clipboard.writeText(leido); estado('Código copiado.', 'ok'); }
+    catch (e) { const t = document.createElement('textarea'); t.value = leido; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); estado('Código copiado.', 'ok'); } catch (x) { estado('No se pudo copiar: escríbelo en la app.', 'error'); } t.remove(); }
+  };
+  $('b-otro').onclick = () => iniciar();
+  $('b-cerrar').onclick = () => { detener(); try { window.close(); } catch (e) { /* nada */ } setTimeout(() => estado('Cierra esta pestaña y vuelve a la pestaña de la app.'), 300); };
+  if (!conApp) document.querySelector('small').textContent = 'Abierta sin la app: el código leído se puede copiar y pegar. Para que vuelva solo a la app, abre el escáner con el botón Cámara de la app.';
+  window.addEventListener('load', iniciar);
+})();
+</script>
+</body>
+</html>
