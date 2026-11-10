@@ -6,12 +6,14 @@
 <meta name="robots" content="noindex">
 <title>Escáner QR · App MP QYT</title>
 <!--
-  Escáner QR de la app de materia prima de Quick & Tasty (versión 3.7).
+  Escáner QR y lector de etiquetas de la app de materia prima de Quick & Tasty (versión 3.10).
   Google no permite la cámara en vivo dentro de las apps de Apps Script, así que esta página, publicada fuera de Apps Script
   (GitHub Pages o el sitio de la empresa), abre la cámara normal del celular, lee el código y lo devuelve a la app:
   1) por mensaje a la pestaña de la app que la abrió y 2) por el servidor de la app (doPost), con una clave de un solo uso.
   No guarda nada ni tiene datos de la empresa: la dirección de la app llega en el enlace que arma la app.
-  Parámetros: sid (clave), api (dirección /exec de la app), b=1 para códigos de barras del proveedor.
+  Parámetros: sid (clave), api (dirección /exec de la app), b=1 para códigos de barras del proveedor,
+  m=etq para el lector de etiquetas: cámara en vivo que lee el código de barras, captura la etiqueta completa y deja
+  marcar las zonas del lote y del vencimiento; manda la foto y las zonas a la app.
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
@@ -34,18 +36,44 @@ main{max-width:520px;margin:0 auto;padding:12px 16px 32px}
 .acciones{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 .btn{flex:1 1 auto;min-height:48px;padding:10px 16px;border-radius:10px;border:2px solid var(--tinta);background:#fff;color:var(--tinta);font:700 17px/1 var(--tit);cursor:pointer}
 .btn.prim{background:var(--amarillo);border-color:#C9A200}
-.btn[hidden]{display:none}
+.btn[hidden],.acciones[hidden]{display:none}
 small{display:block;margin-top:14px;color:var(--suave)}
+#revision{display:none}
+#revision.ver{display:block}
+#lienzo{width:100%;height:auto;display:block;border-radius:12px;background:#11181E;touch-action:none;cursor:crosshair}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.chip{display:inline-block;padding:4px 10px;border-radius:999px;font-weight:600;font-size:14px;background:#EEF0EC;color:var(--tinta)}
+.chip.lote{background:#DCE8FA;color:#143E73}
+.chip.venc{background:#FFE0C4;color:#6B3200}
+.chip.cod{background:var(--verde-f);color:#0F4A2A}
+.btn.activo{outline:3px solid var(--amarillo);outline-offset:1px}
 </style>
 </head>
 <body>
-<header><h1>Escáner QR</h1><span>App MP · Quick &amp; Tasty</span></header>
+<header><h1 id="titulo">Escáner QR</h1><span>App MP · Quick &amp; Tasty</span></header>
 <main>
   <div id="lector" aria-label="Vista de la cámara"></div>
   <div id="codigo" aria-live="polite"></div>
   <p id="estado" aria-live="polite">Abriendo la cámara...</p>
   <div class="acciones" id="extra"></div>
-  <div class="acciones">
+  <div class="acciones" id="acc-etq" hidden>
+    <button class="btn prim" id="b-capturar" type="button">Capturar etiqueta</button>
+  </div>
+  <section id="revision" aria-label="Revisar la etiqueta">
+    <canvas id="lienzo" aria-label="Foto de la etiqueta"></canvas>
+    <div class="chips" id="chips"></div>
+    <p id="ayuda-zonas">¿El lote o el vencimiento se ven pequeños, borrosos o en puntos? Toca <b>Marcar lote</b> o <b>Marcar vencimiento</b> y arrastra el dedo sobre ese dato en la foto.</p>
+    <div class="acciones">
+      <button class="btn" id="b-mlote" type="button">Marcar lote</button>
+      <button class="btn" id="b-mvenc" type="button">Marcar vencimiento</button>
+      <button class="btn" id="b-borrar" type="button">Borrar marcas</button>
+    </div>
+    <div class="acciones">
+      <button class="btn" id="b-repetir" type="button">Repetir</button>
+      <button class="btn prim" id="b-enviar" type="button">Enviar a la app</button>
+    </div>
+  </section>
+  <div class="acciones" id="acc-foto">
     <button class="btn prim" id="b-foto" type="button">Tomar foto</button>
     <button class="btn" id="b-galeria" type="button">Elegir de la galería</button>
   </div>
@@ -66,9 +94,12 @@ small{display:block;margin-top:14px;color:var(--suave)}
   const apiCruda = P.get('api') || '';
   // Solo se devuelve el código a la dirección de una app de Apps Script (o a una prueba local)
   const api = /^https:\/\/script\.google\.com\/(a\/macros\/[^/]+|macros)\/s\/[A-Za-z0-9_-]+\/(exec|dev)$/.test(apiCruda) || /^http:\/\/localhost(:\d+)?\//.test(apiCruda) ? apiCruda : '';
-  const barras = P.get('b') === '1';
+  const etq = P.get('m') === 'etq';
+  const barras = P.get('b') === '1' || etq;
   const conApp = !!sid;
   let q = null, leido = '', enviado = false;
+  // Lector de etiquetas: código leído en vivo, imagen capturada en tamaño completo y zonas marcadas (en píxeles de la imagen)
+  const E = { codigo: '', fuente: null, zonas: [], marcando: '', arrastre: null };
 
   function estado(t, tipo) { const e = $('estado'); e.textContent = t; e.className = tipo || ''; }
   function beep(ok) {
@@ -96,6 +127,7 @@ small{display:block;margin-top:14px;color:var(--suave)}
   }
 
   function listo(cod) {
+    if (etq) return codigoEtq(cod);
     if (leido) return;
     leido = String(cod || '').trim();
     if (!leido) return;
@@ -108,7 +140,7 @@ small{display:block;margin-top:14px;color:var(--suave)}
   }
 
   // ── Cámara en vivo ──
-  function detener() { const x = q; q = null; if (x) { try { x.stop().then(() => x.clear()).catch(() => {}); } catch (e) { /* ya estaba detenida */ } } }
+  function detener() { clearInterval(tVivo); const x = q; q = null; if (x) { try { x.stop().then(() => x.clear()).catch(() => {}); } catch (e) { /* ya estaba detenida */ } } }
   function mejorar(x) {
     let cap = {};
     try { cap = (x.getRunningTrackCapabilities && x.getRunningTrackCapabilities()) || {}; } catch (e) { cap = {}; }
@@ -129,14 +161,19 @@ small{display:block;margin-top:14px;color:var(--suave)}
     $('codigo').style.display = 'none'; $('lector').style.display = 'block';
     $('b-copiar').hidden = true; $('b-otro').hidden = true;
     if (!window.Html5Qrcode) { estado('No cargó el lector. Revisa la conexión a internet y recarga la página, o usa Tomar foto.', 'error'); return; }
-    estado(barras ? 'Apunta al código de barras del proveedor.' : 'Apunta al QR. Cuando lo lea, vuelves a la app sola.');
+    if (etq) { $('revision').className = ''; $('acc-etq').hidden = false; $('acc-foto').hidden = false; }
+    estado(etq ? 'Encuadra toda la etiqueta del proveedor, derecha y con buena luz. Si tiene código de barras, se lee solo. Luego toca Capturar etiqueta.'
+      : (barras ? 'Apunta al código de barras del proveedor.' : 'Apunta al QR. Cuando lo lea, vuelves a la app sola.'));
     q = new Html5Qrcode('lector', { verbose: false, formatsToSupport: formatos(), experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
-    q.start({ facingMode: 'environment' }, {
+    q.start({ facingMode: 'environment' }, etq ? {
+      fps: 10,
+      videoConstraints: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
+    } : {
       fps: 15,
       qrbox: (w, h) => { const m = Math.min(w, h); return barras ? { width: Math.max(120, Math.floor(w * 0.9)), height: Math.max(80, Math.floor(m * 0.55)) } : { width: Math.max(120, Math.floor(m * 0.8)), height: Math.max(120, Math.floor(m * 0.8)) }; },
       videoConstraints: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
     }, txt => listo(txt), () => {})
-      .then(() => mejorar(q))
+      .then(() => { mejorar(q); if (etq) vigilarVivo(); })
       .catch(err => {
         q = null;
         const n = String((err && err.name) || err || '');
@@ -147,12 +184,203 @@ small{display:block;margin-top:14px;color:var(--suave)}
       });
   }
 
+  // ── Lector de etiquetas ──
+  function codigoUtil(t) { t = String(t || '').trim(); return t && !/^L-\d{6}$/i.test(t) && t.length <= 300 ? t : ''; }
+  function codigoEtq(cod) {
+    const t = codigoUtil(cod);
+    if (!t || t === E.codigo) return;
+    E.codigo = t; beep(true); pintarChips();
+    if (!E.fuente) estado('Código de barras leído. Ahora toca Capturar etiqueta.', 'ok');
+  }
+  function pintarChips() {
+    const c = $('chips'); if (!c) return;
+    c.innerHTML = (E.codigo ? '<span class="chip cod">Código: ' + E.codigo.replace(/[<>&]/g, '') + '</span>' : '<span class="chip">Sin código de barras</span>') +
+      E.zonas.map(z => '<span class="chip ' + z.campo + '">Zona del ' + (z.campo === 'lote' ? 'lote' : 'vencimiento') + ' marcada</span>').join('');
+    if (!$('revision').classList.contains('ver') && E.codigo) { $('codigo').textContent = 'Código de barras: ' + E.codigo; $('codigo').style.display = 'block'; }
+  }
+  function aCanvas(fuente, lado) {
+    const W = fuente.naturalWidth || fuente.videoWidth || fuente.width, H = fuente.naturalHeight || fuente.videoHeight || fuente.height;
+    const k = Math.min(1, lado / Math.max(W, H));
+    const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(W * k)); c.height = Math.max(1, Math.round(H * k));
+    const x = c.getContext('2d'); x.imageSmoothingQuality = 'high'; x.drawImage(fuente, 0, 0, c.width, c.height); return c;
+  }
+  async function fotoDeCamara() {
+    const v = document.querySelector('#lector video');
+    if (!v || !v.videoWidth) throw new Error('sin video');
+    const track = v.srcObject && v.srcObject.getVideoTracks && v.srcObject.getVideoTracks()[0];
+    if (track && window.ImageCapture) {
+      try {
+        const blob = await Promise.race([new ImageCapture(track).takePhoto(), new Promise((ok, mal) => setTimeout(() => mal(new Error('lento')), 3500))]);
+        const img = await cargar(blob);
+        if ((img.naturalWidth || 0) >= v.videoWidth) return aCanvas(img, 3200);
+      } catch (e) { /* se usa el cuadro del video */ }
+    }
+    return aCanvas(v, 3200);
+  }
+  async function capturar() {
+    estado('Capturando...');
+    let c;
+    try { c = await fotoDeCamara(); } catch (e) { estado('No se pudo capturar de la cámara. Usa Tomar foto.', 'error'); return; }
+    detener();
+    revisar(c);
+  }
+  async function revisar(canvas) {
+    E.fuente = canvas; E.zonas = []; E.marcando = '';
+    $('lector').style.display = 'none'; $('acc-etq').hidden = true; $('acc-foto').hidden = true; $('codigo').style.display = 'none';
+    $('revision').className = 'ver';
+    dibujar(); pintarChips(); botonesMarca();
+    estado(E.codigo ? 'Revisa la foto: se debe leer el nombre, el lote y el vencimiento. Si está bien, toca Enviar a la app.' : 'Revisa la foto. Buscando el código de barras en la foto...');
+    if (!E.codigo) {
+      const t = await codigoEnImagen(canvas);
+      if (t) codigoEtq(t);
+      estado('Revisa la foto: se debe leer el nombre, el lote y el vencimiento.' + (E.codigo ? '' : ' No se encontró código de barras: no importa, la app lee el texto.') + ' Si está bien, toca Enviar a la app.', E.codigo ? 'ok' : '');
+    }
+  }
+  // Pedazos de la imagen donde buscar el código: el lector de barras de respaldo (ZXing) falla si hay texto en la misma
+  // línea que las barras, así que se prueba la imagen completa, sus mitades y sus cuartos
+  function regiones(W, H) {
+    const r = [[0, 0, W, H], [W / 2, 0, W / 2, H], [0, 0, W / 2, H], [0, H / 2, W, H / 2], [0, 0, W, H / 2]];
+    [[0, 0], [W / 2, 0], [0, H / 2], [W / 2, H / 2]].forEach(([x, y]) => r.push([x, y, W / 2, H / 2]));
+    r.push([W * 0.2, H * 0.2, W * 0.6, H * 0.6]);
+    return r;
+  }
+  function pedazo(c, rg, lado) {
+    const [sx, sy, sw, sh] = rg, k = Math.min(1, lado / Math.max(sw, sh));
+    const o = document.createElement('canvas'); o.width = Math.max(1, Math.round(sw * k)); o.height = Math.max(1, Math.round(sh * k));
+    const g = o.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, o.width, o.height); g.drawImage(c, sx, sy, sw, sh, 0, 0, o.width, o.height);
+    return o;
+  }
+  let bdEtq;
+  async function codigoEnImagen(c, rapido) {
+    if (bdEtq === undefined) { bdEtq = null; if ('BarcodeDetector' in window) { try { const f = await BarcodeDetector.getSupportedFormats(); if (f && f.length) bdEtq = new BarcodeDetector(); } catch (e) { bdEtq = null; } } }
+    const W = c.width, H = c.height;
+    if (bdEtq) {
+      for (const rg of (rapido ? regiones(W, H).slice(0, 1) : regiones(W, H))) {
+        try { const r = await bdEtq.detect(pedazo(c, rg, 1600)); const y = (r || []).find(z => codigoUtil(z.rawValue)); if (y) return y.rawValue; } catch (e) { /* sigue */ }
+      }
+      return '';
+    }
+    if (!window.Html5Qrcode) return '';
+    let host = $('leer-oculto'); if (!host) { host = document.createElement('div'); host.id = 'leer-oculto'; host.style.display = 'none'; document.body.appendChild(host); }
+    for (const rg of regiones(W, H)) {
+      const blob = await new Promise(r => pedazo(c, rg, rapido ? 900 : 1400).toBlob(r, 'image/jpeg', 0.92));
+      const x = new Html5Qrcode('leer-oculto', { verbose: false, formatsToSupport: formatos() });
+      try { const t = await x.scanFile(new File([blob], 'etiqueta.jpg', { type: 'image/jpeg' }), false); if (codigoUtil(t)) return t; } catch (e) { /* sigue */ } finally { try { x.clear(); } catch (e) { /* nada */ } }
+      if (rapido && (E.codigo || E.fuente)) return '';
+    }
+    return '';
+  }
+  // Mientras se encuadra, cada 1,5 s se busca el código por pedazos del cuadro del video (además del lector en vivo)
+  let busy = false, tVivo = null;
+  function vigilarVivo() {
+    clearInterval(tVivo);
+    tVivo = setInterval(async () => {
+      if (busy || E.codigo || E.fuente || !q) return;
+      const v = document.querySelector('#lector video'); if (!v || !v.videoWidth) return;
+      busy = true;
+      try { const t = await codigoEnImagen(aCanvas(v, 1600), true); if (t && !E.fuente) codigoEtq(t); } catch (e) { /* sigue */ }
+      busy = false;
+    }, 1500);
+  }
+  function dibujar() {
+    const L = $('lienzo'), F = E.fuente; if (!F) return;
+    const k = Math.min(1, 1200 / Math.max(F.width, F.height));
+    L.width = Math.round(F.width * k); L.height = Math.round(F.height * k);
+    const x = L.getContext('2d');
+    x.drawImage(F, 0, 0, L.width, L.height);
+    const todas = E.zonas.concat(E.arrastre ? [E.arrastre] : []);
+    todas.forEach(z => {
+      const color = z.campo === 'lote' ? '#1F5FAD' : '#C25E00';
+      x.lineWidth = Math.max(3, L.width / 200); x.strokeStyle = color; x.fillStyle = color + '33';
+      x.fillRect(z.x * k, z.y * k, z.w * k, z.h * k); x.strokeRect(z.x * k, z.y * k, z.w * k, z.h * k);
+      x.fillStyle = color; x.font = 'bold ' + Math.max(16, Math.round(L.width / 28)) + 'px sans-serif';
+      x.fillText(z.campo === 'lote' ? 'LOTE' : 'VENCE', z.x * k + 4, Math.max(18, z.y * k - 6));
+    });
+  }
+  function botonesMarca() {
+    $('b-mlote').classList.toggle('activo', E.marcando === 'lote');
+    $('b-mvenc').classList.toggle('activo', E.marcando === 'venc');
+  }
+  function punto(ev) {
+    const L = $('lienzo'), r = L.getBoundingClientRect(), F = E.fuente;
+    const px = (ev.clientX - r.left) / r.width * F.width, py = (ev.clientY - r.top) / r.height * F.height;
+    return { x: Math.max(0, Math.min(F.width, px)), y: Math.max(0, Math.min(F.height, py)) };
+  }
+  function marcar(campo) {
+    E.marcando = E.marcando === campo ? '' : campo; botonesMarca();
+    if (E.marcando) estado('Arrastra el dedo sobre el ' + (campo === 'lote' ? 'lote' : 'vencimiento') + ' en la foto, de una esquina a la otra.');
+  }
+  (function () {
+    const L = $('lienzo');
+    L.addEventListener('pointerdown', ev => {
+      if (!E.marcando || !E.fuente) return;
+      ev.preventDefault(); try { L.setPointerCapture(ev.pointerId); } catch (e) { /* nada */ }
+      const p = punto(ev); E.arrastre = { campo: E.marcando, x0: p.x, y0: p.y, x: p.x, y: p.y, w: 0, h: 0 };
+    });
+    L.addEventListener('pointermove', ev => {
+      const a = E.arrastre; if (!a) return;
+      const p = punto(ev);
+      a.x = Math.min(a.x0, p.x); a.y = Math.min(a.y0, p.y); a.w = Math.abs(p.x - a.x0); a.h = Math.abs(p.y - a.y0); dibujar();
+    });
+    const soltar = () => {
+      const a = E.arrastre; E.arrastre = null; if (!a) return;
+      const min = Math.max(E.fuente.width, E.fuente.height) * 0.02;
+      if (a.w < min || a.h < min) { dibujar(); estado('La zona quedó muy pequeña. Arrastra de una esquina a la otra del dato.', 'error'); return; }
+      E.zonas = E.zonas.filter(z => z.campo !== a.campo).concat([{ campo: a.campo, x: a.x, y: a.y, w: a.w, h: a.h }]);
+      E.marcando = ''; botonesMarca(); dibujar(); pintarChips();
+      estado('Zona del ' + (a.campo === 'lote' ? 'lote' : 'vencimiento') + ' marcada. Marca la otra si hace falta, o toca Enviar a la app.', 'ok');
+    };
+    L.addEventListener('pointerup', soltar); L.addEventListener('pointercancel', soltar);
+  })();
+  function recorte(z) {
+    const F = E.fuente, mx = z.w * 0.12, my = z.h * 0.25;
+    const x = Math.max(0, z.x - mx), y = Math.max(0, z.y - my), w = Math.min(F.width - x, z.w + 2 * mx), h = Math.min(F.height - y, z.h + 2 * my);
+    const k = Math.max(1, Math.min(3, 900 / w));
+    const c = document.createElement('canvas'); c.width = Math.round(w * k); c.height = Math.round(h * k);
+    const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(F, x, y, w, h, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.9);
+  }
+  async function enviarEtiqueta() {
+    if (!E.fuente || enviado) return;
+    if (!conApp) { estado('Esta página se abrió sin la app: ábrela con el botón Leer etiqueta con la cámara de la app.', 'error'); return; }
+    enviado = true;
+    $('b-enviar').disabled = true;
+    estado('Enviando la etiqueta a la app...');
+    const datos = { codigo: E.codigo, foto: aCanvas(E.fuente, 1600).toDataURL('image/jpeg', 0.82), zonas: E.zonas.map(z => ({ campo: z.campo, foto: recorte(z) })) };
+    let porMensaje = false;
+    try { if (window.opener && !window.opener.closed) { window.opener.postMessage({ qytEscaner: sid, etiqueta: datos }, '*'); porMensaje = true; } } catch (e) { porMensaje = false; }
+    let porServidor = false;
+    if (api) {
+      try {
+        await Promise.race([
+          fetch(api, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ a: 'etiqueta', sid: sid, c: datos.codigo, foto: datos.foto, zonas: datos.zonas }) }),
+          new Promise((ok, mal) => setTimeout(() => mal(new Error('lento')), 30000))
+        ]);
+        porServidor = true;
+      } catch (e) { porServidor = false; }
+    }
+    if (porMensaje || porServidor) {
+      beep(true);
+      estado('Listo. La etiqueta va para la app; esta pestaña se cierra sola. Si no se cierra, toca Volver a la app.', 'ok');
+      setTimeout(() => { try { window.close(); } catch (e) { /* no se pudo */ } }, 500);
+    } else {
+      enviado = false; $('b-enviar').disabled = false; beep(false);
+      estado('No se pudo enviar a la app. Revisa la conexión a internet y toca Enviar a la app otra vez.', 'error');
+    }
+  }
+  $('b-capturar').onclick = capturar;
+  $('b-mlote').onclick = () => marcar('lote');
+  $('b-mvenc').onclick = () => marcar('venc');
+  $('b-borrar').onclick = () => { E.zonas = []; E.marcando = ''; botonesMarca(); dibujar(); pintarChips(); };
+  $('b-repetir').onclick = () => { E.fuente = null; E.zonas = []; $('revision').className = ''; $('b-enviar').disabled = false; enviado = false; iniciar(); };
+  $('b-enviar').onclick = enviarEtiqueta;
+
   // ── Foto ──
   function cargar(f) {
     return new Promise((ok, mal) => {
       const rd = new FileReader();
       rd.onload = () => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => mal(new Error('foto')); i.src = rd.result; };
-      rd.onerror = () => mal(new Error('foto')); rd.readAsDataURL(f);
+      rd.onerror = () => mal(new Error('foto')); rd.readAsDataURL(f instanceof Blob ? f : new Blob([f]));
     });
   }
   function lienzo(img, lado, frac) {
@@ -163,6 +391,10 @@ small{display:block;margin-top:14px;color:var(--suave)}
   }
   async function leerFoto(f) {
     detener();
+    if (etq) {
+      try { const img = await cargar(f); revisar(aCanvas(img, 3200)); } catch (e) { beep(false); estado('No se pudo abrir la foto. En la cámara del celular elige el formato JPG.', 'error'); }
+      return;
+    }
     estado('Leyendo el código de la foto...');
     let img;
     try { img = await cargar(f); } catch (e) { beep(false); estado('No se pudo abrir la foto. En la cámara del celular elige el formato JPG.', 'error'); return; }
@@ -199,6 +431,11 @@ small{display:block;margin-top:14px;color:var(--suave)}
   };
   $('b-otro').onclick = () => iniciar();
   $('b-cerrar').onclick = () => { detener(); try { window.close(); } catch (e) { /* nada */ } setTimeout(() => estado('Cierra esta pestaña y vuelve a la pestaña de la app.'), 300); };
+  if (etq) {
+    document.title = 'Lector de etiquetas · App MP QYT'; $('titulo').textContent = 'Lector de etiquetas';
+    $('b-foto').className = 'btn'; $('b-foto').textContent = 'Usar la cámara del celular';
+    document.querySelector('small').textContent = 'Ponte a unos 20 a 40 cm, con la etiqueta derecha y sin reflejos (inclina un poco el envase si brilla). Con poca luz usa la linterna.';
+  }
   if (!conApp) document.querySelector('small').textContent = 'Abierta sin la app: el código leído se puede copiar y pegar. Para que vuelva solo a la app, abre el escáner con el botón Cámara de la app.';
   window.addEventListener('load', iniciar);
 })();
