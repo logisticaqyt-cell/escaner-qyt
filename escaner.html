@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Escáner QR · App MP QYT</title>
 <!--
-  Escáner QR y lector de etiquetas de la app de materia prima de Quick & Tasty (versión 3.10).
+  Escáner QR y lector de etiquetas de la app de materia prima de Quick & Tasty (versión 4.1).
   Google no permite la cámara en vivo dentro de las apps de Apps Script, así que esta página, publicada fuera de Apps Script
   (GitHub Pages o el sitio de la empresa), abre la cámara normal del celular, lee el código y lo devuelve a la app:
   1) por mensaje a la pestaña de la app que la abrió y 2) por el servidor de la app (doPost), con una clave de un solo uso.
@@ -186,17 +186,24 @@ small{display:block;margin-top:14px;color:var(--suave)}
 
   // ── Lector de etiquetas ──
   function codigoUtil(t) { t = String(t || '').trim(); return t && !/^L-\d{6}$/i.test(t) && t.length <= 300 ? t : ''; }
+  // 4.1: una etiqueta puede traer varios códigos (el EAN del producto y un GS1-128 o DataMatrix con lote y vencimiento):
+  // se guardan todos, uno por línea, y la app los combina
+  function esGtin(t) { return /^\d{8}$|^\d{12,14}$/.test(t); }
+  function codigosDe(cod) { return String(cod || '').split('\n').map(codigoUtil).filter(Boolean); }
   function codigoEtq(cod) {
-    const t = codigoUtil(cod);
-    if (!t || t === E.codigo) return;
-    E.codigo = t; beep(true); pintarChips();
-    if (!E.fuente) estado('Código de barras leído. Ahora toca Capturar etiqueta.', 'ok');
+    const nuevos = codigosDe(cod).filter(t => codigosDe(E.codigo).indexOf(t) < 0);
+    if (!nuevos.length) return;
+    const lista = codigosDe(E.codigo).concat(nuevos).slice(0, 4);
+    lista.sort((a, b) => (esGtin(a) ? 1 : 0) - (esGtin(b) ? 1 : 0));
+    E.codigo = lista.join('\n'); beep(true); pintarChips();
+    if (!E.fuente) estado(lista.length > 1 ? 'Se leyeron ' + lista.length + ' códigos de la etiqueta. Ahora toca Capturar etiqueta.' : 'Código de barras leído. Ahora toca Capturar etiqueta.', 'ok');
   }
+  function textoCodigos() { return codigosDe(E.codigo).map(t => t.replace(/[<>&\x1d]/g, ' ').trim()).join(' + '); }
   function pintarChips() {
     const c = $('chips'); if (!c) return;
-    c.innerHTML = (E.codigo ? '<span class="chip cod">Código: ' + E.codigo.replace(/[<>&]/g, '') + '</span>' : '<span class="chip">Sin código de barras</span>') +
+    c.innerHTML = (E.codigo ? '<span class="chip cod">' + (codigosDe(E.codigo).length > 1 ? 'Códigos: ' : 'Código: ') + textoCodigos() + '</span>' : '<span class="chip">Sin código de barras</span>') +
       E.zonas.map(z => '<span class="chip ' + z.campo + '">Zona del ' + (z.campo === 'lote' ? 'lote' : 'vencimiento') + ' marcada</span>').join('');
-    if (!$('revision').classList.contains('ver') && E.codigo) { $('codigo').textContent = 'Código de barras: ' + E.codigo; $('codigo').style.display = 'block'; }
+    if (!$('revision').classList.contains('ver') && E.codigo) { $('codigo').textContent = (codigosDe(E.codigo).length > 1 ? 'Códigos de barras: ' : 'Código de barras: ') + textoCodigos(); $('codigo').style.display = 'block'; }
   }
   function aCanvas(fuente, lado) {
     const W = fuente.naturalWidth || fuente.videoWidth || fuente.width, H = fuente.naturalHeight || fuente.videoHeight || fuente.height;
@@ -229,12 +236,10 @@ small{display:block;margin-top:14px;color:var(--suave)}
     $('lector').style.display = 'none'; $('acc-etq').hidden = true; $('acc-foto').hidden = true; $('codigo').style.display = 'none';
     $('revision').className = 'ver';
     dibujar(); pintarChips(); botonesMarca();
-    estado(E.codigo ? 'Revisa la foto: se debe leer el nombre, el lote y el vencimiento. Si está bien, toca Enviar a la app.' : 'Revisa la foto. Buscando el código de barras en la foto...');
-    if (!E.codigo) {
-      const t = await codigoEnImagen(canvas);
-      if (t) codigoEtq(t);
-      estado('Revisa la foto: se debe leer el nombre, el lote y el vencimiento.' + (E.codigo ? '' : ' No se encontró código de barras: no importa, la app lee el texto.') + ' Si está bien, toca Enviar a la app.', E.codigo ? 'ok' : '');
-    }
+    estado('Revisa la foto. Buscando ' + (E.codigo ? 'otros códigos' : 'el código de barras') + ' en la foto...');
+    const t = await codigoEnImagen(canvas, false, codigosDe(E.codigo));
+    if (t) codigoEtq(t);
+    estado('Revisa la foto: se debe leer el nombre, el lote y el vencimiento.' + (E.codigo ? '' : ' No se encontró código de barras: no importa, la app lee el texto.') + ' Si está bien, toca Enviar a la app.', E.codigo ? 'ok' : '');
   }
   // Pedazos de la imagen donde buscar el código: el lector de barras de respaldo (ZXing) falla si hay texto en la misma
   // línea que las barras, así que se prueba la imagen completa, sus mitades y sus cuartos
@@ -250,25 +255,71 @@ small{display:block;margin-top:14px;color:var(--suave)}
     const g = o.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, o.width, o.height); g.drawImage(c, sx, sy, sw, sh, 0, 0, o.width, o.height);
     return o;
   }
+  function girar90(c) {
+    const o = document.createElement('canvas'); o.width = c.height; o.height = c.width;
+    const g = o.getContext('2d'); g.translate(o.width, 0); g.rotate(Math.PI / 2); g.drawImage(c, 0, 0);
+    return o;
+  }
+  // Pasa a gris y estira el contraste (2 % a 98 %): ayuda con fotos lavadas, a contraluz o con barras grises
+  function contrastar(c) {
+    const o = document.createElement('canvas'); o.width = c.width; o.height = c.height;
+    const g = o.getContext('2d', { willReadFrequently: true }); g.drawImage(c, 0, 0);
+    const im = g.getImageData(0, 0, o.width, o.height), d = im.data, hist = new Uint32Array(256), n = d.length / 4;
+    for (let k = 0; k < d.length; k += 4) { const v = (d[k] * 299 + d[k + 1] * 587 + d[k + 2] * 114) / 1000 | 0; d[k] = v; hist[v]++; }
+    let lo = 0, hi = 255, acc = 0;
+    for (; lo < 255 && acc < n * 0.02; lo++) acc += hist[lo];
+    acc = 0;
+    for (; hi > 0 && acc < n * 0.02; hi--) acc += hist[hi];
+    const k2 = 255 / Math.max(1, hi - lo);
+    for (let k = 0; k < d.length; k += 4) { const v = Math.max(0, Math.min(255, (d[k] - lo) * k2)); d[k] = d[k + 1] = d[k + 2] = v; }
+    g.putImageData(im, 0, 0);
+    return o;
+  }
+  function completo(lista) { return lista.length >= 2 || lista.some(t => /^(\(01\)|01\d{14}|\]C1|\]d2)/.test(t) && /\(10\)|\x1d|10[A-Z0-9]/.test(t.slice(16))); }
   let bdEtq;
-  async function codigoEnImagen(c, rapido) {
+  // Devuelve los códigos hallados (uno por línea) que no estén en "yaVistos". rapido: solo la imagen completa, sin giros.
+  async function codigoEnImagen(c, rapido, yaVistos) {
     if (bdEtq === undefined) { bdEtq = null; if ('BarcodeDetector' in window) { try { const f = await BarcodeDetector.getSupportedFormats(); if (f && f.length) bdEtq = new BarcodeDetector(); } catch (e) { bdEtq = null; } } }
-    const W = c.width, H = c.height;
+    const W = c.width, H = c.height, previos = yaVistos || [], hallados = [], fin = Date.now() + (rapido ? 4000 : 12000);
+    const anotar = t => { t = codigoUtil(t); if (t && previos.indexOf(t) < 0 && hallados.indexOf(t) < 0) hallados.push(t); };
+    const todos = () => previos.concat(hallados);
+    const rgs = rapido ? regiones(W, H).slice(0, 1) : regiones(W, H);
     if (bdEtq) {
-      for (const rg of (rapido ? regiones(W, H).slice(0, 1) : regiones(W, H))) {
-        try { const r = await bdEtq.detect(pedazo(c, rg, 1600)); const y = (r || []).find(z => codigoUtil(z.rawValue)); if (y) return y.rawValue; } catch (e) { /* sigue */ }
+      for (const rg of rgs) {
+        if (completo(todos()) || Date.now() > fin) break;
+        try { (await bdEtq.detect(pedazo(c, rg, 1600)) || []).forEach(z => anotar(z.rawValue)); } catch (e) { /* sigue */ }
       }
-      return '';
+      if (!rapido && !todos().length) {
+        const base = pedazo(c, [0, 0, W, H], 1600);
+        for (const v of [girar90(base), contrastar(base), girar90(contrastar(base))]) { try { (await bdEtq.detect(v) || []).forEach(z => anotar(z.rawValue)); } catch (e) { /* sigue */ } if (hallados.length) break; }
+      }
+      return hallados.join('\n');
     }
     if (!window.Html5Qrcode) return '';
     let host = $('leer-oculto'); if (!host) { host = document.createElement('div'); host.id = 'leer-oculto'; host.style.display = 'none'; document.body.appendChild(host); }
-    for (const rg of regiones(W, H)) {
-      const blob = await new Promise(r => pedazo(c, rg, rapido ? 900 : 1400).toBlob(r, 'image/jpeg', 0.92));
+    const leer = async lienzo => {
+      const blob = await new Promise(r => lienzo.toBlob(r, 'image/jpeg', 0.92));
       const x = new Html5Qrcode('leer-oculto', { verbose: false, formatsToSupport: formatos() });
-      try { const t = await x.scanFile(new File([blob], 'etiqueta.jpg', { type: 'image/jpeg' }), false); if (codigoUtil(t)) return t; } catch (e) { /* sigue */ } finally { try { x.clear(); } catch (e) { /* nada */ } }
-      if (rapido && (E.codigo || E.fuente)) return '';
+      try { anotar(await x.scanFile(new File([blob], 'etiqueta.jpg', { type: 'image/jpeg' }), false)); } catch (e) { /* sigue */ } finally { try { x.clear(); } catch (e) { /* nada */ } }
+    };
+    const pasadas = rapido ? [l => l] : [l => l, girar90, contrastar, l => girar90(contrastar(l))];
+    const todasRg = regiones(W, H);
+    for (let pz = 0; pz < pasadas.length; pz++) {
+      const lista = pz === 0 ? todasRg : todasRg.slice(0, 5);
+      for (let i = 0; i < lista.length; i++) {
+        if (completo(todos()) || Date.now() > fin || (hallados.length && (pz > 0 || i >= 5))) break;
+        await leer(pasadas[pz](pedazo(c, lista[i], rapido ? 900 : 1400)));
+        if (rapido && (E.codigo || E.fuente)) break;
+      }
+      if (hallados.length || todos().length) break;
     }
-    return '';
+    // Ventanas pequeñas (un tercio, con traslape): el lector de respaldo solo encuentra un DataMatrix si queda cerca del centro
+    if (!rapido) {
+      const vent = [[0.25, 0, 0.5, 0.5], [0, 0.25, 0.5, 0.5], [0.5, 0.25, 0.5, 0.5], [0.25, 0.5, 0.5, 0.5], [0.25, 0.25, 0.5, 0.5]];
+      for (let y = 0; y <= 4; y++) for (let x = 0; x <= 4; x++) vent.push([x / 6, y / 6, 1 / 3, 1 / 3]);
+      for (let i = 0; i < vent.length && !completo(todos()) && Date.now() < fin - 2000; i++) await leer(pedazo(c, [W * vent[i][0], H * vent[i][1], W * vent[i][2], H * vent[i][3]], 800));
+    }
+    return hallados.join('\n');
   }
   // Mientras se encuadra, cada 1,5 s se busca el código por pedazos del cuadro del video (además del lector en vivo)
   let busy = false, tVivo = null;
@@ -278,7 +329,7 @@ small{display:block;margin-top:14px;color:var(--suave)}
       if (busy || E.codigo || E.fuente || !q) return;
       const v = document.querySelector('#lector video'); if (!v || !v.videoWidth) return;
       busy = true;
-      try { const t = await codigoEnImagen(aCanvas(v, 1600), true); if (t && !E.fuente) codigoEtq(t); } catch (e) { /* sigue */ }
+      try { const t = await codigoEnImagen(aCanvas(v, 1600), true, codigosDe(E.codigo)); if (t && !E.fuente) codigoEtq(t); } catch (e) { /* sigue */ }
       busy = false;
     }, 1500);
   }
