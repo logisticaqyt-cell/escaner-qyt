@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Escáner QR · App MP QYT</title>
 <!--
-  Escáner QR y lector de etiquetas de la app de materia prima de Quick & Tasty (versión 4.1).
+  Escáner QR y lector de etiquetas de la app de materia prima de Quick & Tasty (versión 4.1.1).
   Google no permite la cámara en vivo dentro de las apps de Apps Script, así que esta página, publicada fuera de Apps Script
   (GitHub Pages o el sitio de la empresa), abre la cámara normal del celular, lee el código y lo devuelve a la app:
   1) por mensaje a la pestaña de la app que la abrió y 2) por el servidor de la app (doPost), con una clave de un solo uso.
@@ -14,6 +14,9 @@
   Parámetros: sid (clave), api (dirección /exec de la app), b=1 para códigos de barras del proveedor,
   m=etq para el lector de etiquetas: cámara en vivo que lee el código de barras, captura la etiqueta completa y deja
   marcar las zonas del lote y del vencimiento; manda la foto y las zonas a la app.
+  4.1.1: todo cabe en una pantalla sin desplazar. La cámara ocupa el espacio que sobra (se ve el centro de la imagen; la captura
+  sigue siendo completa), el aviso va en una franja translúcida sobre la cámara, Capturar, Linterna y Acercar flotan sobre ella,
+  Volver a la app está en el encabezado y los consejos largos quedan plegados abajo.
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
@@ -23,12 +26,31 @@
 :root{--tinta:#1E2B35;--texto:#3E4B55;--suave:#5B6770;--fondo:#F5F4EF;--panel:#FFFFFF;--borde:#D8D6CC;--amarillo:#F2C300;--verde:#1F7445;--verde-f:#E3F1E8;--rojo:#B3261E;--rojo-f:#FBE9E7;--base:'Barlow',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;--tit:'Barlow Condensed','Barlow',system-ui,Arial,sans-serif}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--fondo);color:var(--texto);font:16px/1.4 var(--base)}
-header{background:var(--tinta);color:#fff;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px}
-header h1{margin:0;font:700 22px/1.1 var(--tit);letter-spacing:.2px}
-header span{font-size:13px;color:#C9D3DA}
-main{max-width:520px;margin:0 auto;padding:12px 16px 32px}
-#lector{width:100%;min-height:260px;background:#11181E;border-radius:12px;overflow:hidden}
-#lector video{border-radius:12px}
+header{background:var(--tinta);color:#fff;padding:8px 12px 8px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+header h1{margin:0;font:700 21px/1.1 var(--tit);letter-spacing:.2px}
+#b-cerrar{flex:none;min-height:40px;padding:6px 14px;border-radius:10px;border:2px solid #fff;background:transparent;color:#fff;font:700 16px/1 var(--tit);cursor:pointer}
+main{max-width:520px;width:100%;margin:0 auto;padding:10px 12px 24px}
+#visor{display:none;position:absolute;left:0;top:0;right:0;bottom:0;background:#11181E;border-radius:12px;overflow:hidden}
+#lector{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);min-height:120px}
+body.vivo{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
+body.vivo main{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px;padding:8px 12px}
+body.vivo #zona{flex:1;min-height:160px;position:relative}
+body.vivo #visor{display:block}
+body.vivo #estado{position:absolute;left:8px;right:8px;top:8px;margin:0;padding:6px 10px;border:0;font-size:14px;line-height:1.3;background:rgba(17,24,30,.66);color:#fff;pointer-events:none}
+body.vivo #estado.ok{background:rgba(31,116,69,.9);color:#fff}
+body.vivo #estado.error{background:rgba(179,38,30,.94);color:#fff}
+body.vivo #codigo{position:absolute;left:8px;right:8px;bottom:72px;margin:0;padding:6px 10px;border-width:0;font-size:17px;background:rgba(227,241,232,.94);color:#0F4A2A}
+body.vivo .acciones{margin-top:0}
+body.vivo #acc-foto{flex-wrap:nowrap}
+body.vivo #acc-foto .btn{min-height:44px;padding:8px 10px;font-size:15px}
+#acc-etq{position:absolute;left:0;right:0;bottom:10px;display:flex;justify-content:center;pointer-events:none}
+#acc-etq[hidden]{display:none}
+#acc-etq .btn{flex:none;min-width:220px;min-height:52px;pointer-events:auto;background:rgba(242,195,0,.94);box-shadow:0 2px 10px rgba(0,0,0,.45)}
+#extra{position:absolute;right:8px;bottom:76px;display:flex;flex-direction:column;gap:8px;margin:0}
+#extra .btn{flex:none;min-height:44px;padding:8px 12px;font-size:15px;border:1px solid rgba(255,255,255,.75);background:rgba(17,24,30,.5);color:#fff}
+details.tips{color:var(--suave);font-size:14px}
+details.tips summary{cursor:pointer;padding:4px 0}
+details.tips small{margin-top:4px}
 #estado{margin:12px 0;padding:12px 14px;border-radius:10px;background:var(--panel);border:1px solid var(--borde)}
 #estado.ok{background:var(--verde-f);border-color:#9CCBAE;color:#0F4A2A}
 #estado.error{background:var(--rojo-f);border-color:#E6B4AF;color:#7A1A14}
@@ -38,9 +60,11 @@ main{max-width:520px;margin:0 auto;padding:12px 16px 32px}
 .btn.prim{background:var(--amarillo);border-color:#C9A200}
 .btn[hidden],.acciones[hidden]{display:none}
 small{display:block;margin-top:14px;color:var(--suave)}
+#ayuda-zonas{font-size:14px;margin:8px 0 0}
+.fija{position:sticky;bottom:0;background:var(--fondo);padding:8px 0 10px}
 #revision{display:none}
 #revision.ver{display:block}
-#lienzo{width:100%;height:auto;display:block;border-radius:12px;background:#11181E;touch-action:none;cursor:crosshair}
+#lienzo{width:auto;height:auto;max-width:100%;max-height:50vh;margin:0 auto;display:block;border-radius:12px;background:#11181E;touch-action:none;cursor:crosshair}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
 .chip{display:inline-block;padding:4px 10px;border-radius:999px;font-weight:600;font-size:14px;background:#EEF0EC;color:var(--tinta)}
 .chip.lote{background:#DCE8FA;color:#143E73}
@@ -50,25 +74,27 @@ small{display:block;margin-top:14px;color:var(--suave)}
 </style>
 </head>
 <body>
-<header><h1 id="titulo">Escáner QR</h1><span>App MP · Quick &amp; Tasty</span></header>
+<header><h1 id="titulo">Escáner QR</h1><button id="b-cerrar" type="button">Volver a la app</button></header>
 <main>
-  <div id="lector" aria-label="Vista de la cámara"></div>
-  <div id="codigo" aria-live="polite"></div>
-  <p id="estado" aria-live="polite">Abriendo la cámara...</p>
-  <div class="acciones" id="extra"></div>
-  <div class="acciones" id="acc-etq" hidden>
-    <button class="btn prim" id="b-capturar" type="button">Capturar etiqueta</button>
+  <div id="zona">
+    <div id="visor">
+      <div id="lector" aria-label="Vista de la cámara"></div>
+      <div id="extra"></div>
+      <div id="acc-etq" hidden><button class="btn prim" id="b-capturar" type="button">Capturar etiqueta</button></div>
+    </div>
+    <div id="codigo" aria-live="polite"></div>
+    <p id="estado" aria-live="polite">Abriendo la cámara...</p>
   </div>
   <section id="revision" aria-label="Revisar la etiqueta">
     <canvas id="lienzo" aria-label="Foto de la etiqueta"></canvas>
     <div class="chips" id="chips"></div>
-    <p id="ayuda-zonas">¿El lote o el vencimiento se ven pequeños, borrosos o en puntos? Toca <b>Marcar lote</b> o <b>Marcar vencimiento</b> y arrastra el dedo sobre ese dato en la foto.</p>
     <div class="acciones">
       <button class="btn" id="b-mlote" type="button">Marcar lote</button>
       <button class="btn" id="b-mvenc" type="button">Marcar vencimiento</button>
       <button class="btn" id="b-borrar" type="button">Borrar marcas</button>
     </div>
-    <div class="acciones">
+    <p id="ayuda-zonas">Si el lote o el vencimiento se ven pequeños o borrosos, toca <b>Marcar lote</b> o <b>Marcar vencimiento</b> y arrastra el dedo sobre ese dato.</p>
+    <div class="acciones fija">
       <button class="btn" id="b-repetir" type="button">Repetir</button>
       <button class="btn prim" id="b-enviar" type="button">Enviar a la app</button>
     </div>
@@ -80,11 +106,10 @@ small{display:block;margin-top:14px;color:var(--suave)}
   <div class="acciones">
     <button class="btn" id="b-copiar" type="button" hidden>Copiar el código</button>
     <button class="btn" id="b-otro" type="button" hidden>Leer otro</button>
-    <button class="btn" id="b-cerrar" type="button">Volver a la app</button>
   </div>
   <input id="f-foto" type="file" accept="image/*" capture="environment" hidden>
   <input id="f-galeria" type="file" accept="image/*" hidden>
-  <small>Apunta al código desde unos 15 a 25 cm, con buena luz. La primera vez el navegador pide permiso para la cámara: toca Permitir.</small>
+  <details class="tips"><summary>Consejos para leer bien</summary><small>Apunta al código desde unos 15 a 25 cm, con buena luz. La primera vez el navegador pide permiso para la cámara: toca Permitir.</small></details>
 </main>
 <script>
 (function () {
@@ -101,6 +126,7 @@ small{display:block;margin-top:14px;color:var(--suave)}
   // Lector de etiquetas: código leído en vivo, imagen capturada en tamaño completo y zonas marcadas (en píxeles de la imagen)
   const E = { codigo: '', fuente: null, zonas: [], marcando: '', arrastre: null };
 
+  function vivo(si) { document.body.classList.toggle('vivo', !!si); }
   function estado(t, tipo) { const e = $('estado'); e.textContent = t; e.className = tipo || ''; }
   function beep(ok) {
     try {
@@ -134,7 +160,7 @@ small{display:block;margin-top:14px;color:var(--suave)}
     beep(true);
     detener();
     const c = $('codigo'); c.textContent = leido; c.style.display = 'block';
-    $('lector').style.display = 'none';
+    vivo(false);
     $('b-copiar').hidden = false; $('b-otro').hidden = false;
     if (conApp) devolver(leido); else estado('Código leído. Cópialo y pégalo donde lo necesites.', 'ok');
   }
@@ -158,12 +184,11 @@ small{display:block;margin-top:14px;color:var(--suave)}
   }
   function iniciar() {
     leido = ''; enviado = false;
-    $('codigo').style.display = 'none'; $('lector').style.display = 'block';
+    $('codigo').style.display = 'none'; vivo(true);
     $('b-copiar').hidden = true; $('b-otro').hidden = true;
     if (!window.Html5Qrcode) { estado('No cargó el lector. Revisa la conexión a internet y recarga la página, o usa Tomar foto.', 'error'); return; }
     if (etq) { $('revision').className = ''; $('acc-etq').hidden = false; $('acc-foto').hidden = false; }
-    estado(etq ? 'Encuadra toda la etiqueta del proveedor, derecha y con buena luz. Si tiene código de barras, se lee solo. Luego toca Capturar etiqueta.'
-      : (barras ? 'Apunta al código de barras del proveedor.' : 'Apunta al QR. Cuando lo lea, vuelves a la app sola.'));
+    estado(etq ? 'Encuadra la etiqueta y toca Capturar etiqueta.' : (barras ? 'Apunta al código de barras.' : 'Apunta al QR.'));
     q = new Html5Qrcode('lector', { verbose: false, formatsToSupport: formatos(), experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
     q.start({ facingMode: 'environment' }, etq ? {
       fps: 10,
@@ -196,14 +221,14 @@ small{display:block;margin-top:14px;color:var(--suave)}
     const lista = codigosDe(E.codigo).concat(nuevos).slice(0, 4);
     lista.sort((a, b) => (esGtin(a) ? 1 : 0) - (esGtin(b) ? 1 : 0));
     E.codigo = lista.join('\n'); beep(true); pintarChips();
-    if (!E.fuente) estado(lista.length > 1 ? 'Se leyeron ' + lista.length + ' códigos de la etiqueta. Ahora toca Capturar etiqueta.' : 'Código de barras leído. Ahora toca Capturar etiqueta.', 'ok');
+    if (!E.fuente) estado(lista.length > 1 ? lista.length + ' códigos leídos. Toca Capturar etiqueta.' : 'Código leído. Toca Capturar etiqueta.', 'ok');
   }
   function textoCodigos() { return codigosDe(E.codigo).map(t => t.replace(/[<>&\x1d]/g, ' ').trim()).join(' + '); }
   function pintarChips() {
     const c = $('chips'); if (!c) return;
     c.innerHTML = (E.codigo ? '<span class="chip cod">' + (codigosDe(E.codigo).length > 1 ? 'Códigos: ' : 'Código: ') + textoCodigos() + '</span>' : '<span class="chip">Sin código de barras</span>') +
       E.zonas.map(z => '<span class="chip ' + z.campo + '">Zona del ' + (z.campo === 'lote' ? 'lote' : 'vencimiento') + ' marcada</span>').join('');
-    if (!$('revision').classList.contains('ver') && E.codigo) { $('codigo').textContent = (codigosDe(E.codigo).length > 1 ? 'Códigos de barras: ' : 'Código de barras: ') + textoCodigos(); $('codigo').style.display = 'block'; }
+    if (!$('revision').classList.contains('ver') && E.codigo) { $('codigo').textContent = textoCodigos(); $('codigo').style.display = 'block'; }
   }
   function aCanvas(fuente, lado) {
     const W = fuente.naturalWidth || fuente.videoWidth || fuente.width, H = fuente.naturalHeight || fuente.videoHeight || fuente.height;
@@ -233,7 +258,7 @@ small{display:block;margin-top:14px;color:var(--suave)}
   }
   async function revisar(canvas) {
     E.fuente = canvas; E.zonas = []; E.marcando = '';
-    $('lector').style.display = 'none'; $('acc-etq').hidden = true; $('acc-foto').hidden = true; $('codigo').style.display = 'none';
+    vivo(false); $('acc-etq').hidden = true; $('b-otro').hidden = true; $('acc-foto').hidden = true; $('codigo').style.display = 'none';
     $('revision').className = 'ver';
     dibujar(); pintarChips(); botonesMarca();
     estado('Revisa la foto. Buscando ' + (E.codigo ? 'otros códigos' : 'el código de barras') + ' en la foto...');
@@ -442,6 +467,7 @@ small{display:block;margin-top:14px;color:var(--suave)}
   }
   async function leerFoto(f) {
     detener();
+    vivo(false); $('b-otro').hidden = false;
     if (etq) {
       try { const img = await cargar(f); revisar(aCanvas(img, 3200)); } catch (e) { beep(false); estado('No se pudo abrir la foto. En la cámara del celular elige el formato JPG.', 'error'); }
       return;
@@ -484,8 +510,8 @@ small{display:block;margin-top:14px;color:var(--suave)}
   $('b-cerrar').onclick = () => { detener(); try { window.close(); } catch (e) { /* nada */ } setTimeout(() => estado('Cierra esta pestaña y vuelve a la pestaña de la app.'), 300); };
   if (etq) {
     document.title = 'Lector de etiquetas · App MP QYT'; $('titulo').textContent = 'Lector de etiquetas';
-    $('b-foto').className = 'btn'; $('b-foto').textContent = 'Usar la cámara del celular';
-    document.querySelector('small').textContent = 'Ponte a unos 20 a 40 cm, con la etiqueta derecha y sin reflejos (inclina un poco el envase si brilla). Con poca luz usa la linterna.';
+    $('b-foto').className = 'btn';
+    document.querySelector('small').textContent = 'Encuadra toda la etiqueta del proveedor; si tiene código de barras, se lee solo. Ponte a unos 20 a 40 cm, con la etiqueta derecha y sin reflejos (inclina un poco el envase si brilla). Con poca luz usa la linterna.';
   }
   if (!conApp) document.querySelector('small').textContent = 'Abierta sin la app: el código leído se puede copiar y pegar. Para que vuelva solo a la app, abre el escáner con el botón Cámara de la app.';
   window.addEventListener('load', iniciar);
